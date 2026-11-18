@@ -630,6 +630,18 @@ use. These functions include:
   fresh pillar data.
 - :py:func:`pillar.get <salt.modules.pillar.get>` - Described in detail below.
 
+.. note::
+    Because :py:func:`pillar.items <salt.modules.pillar.items>` and
+    :py:func:`pillar.ext <salt.modules.pillar.ext>` compile pillar from scratch,
+    they cannot be used from a pillar SLS file (or from an
+    :ref:`ext_pillar <external-pillars>` module) while pillar is being compiled
+    for that minion and pillar environment: they would re-enter pillar
+    compilation. Salt detects this and reports a pillar render error instead of
+    recursing. To share data between pillar files use ``import_yaml`` or
+    ``import_json``, and to read pillar values that have already been rendered
+    use :py:func:`pillar.get <salt.modules.pillar.get>` or
+    :py:func:`pillar.raw <salt.modules.pillar.raw>`.
+
 
 The :py:func:`pillar.get <salt.modules.pillar.get>` Function
 ============================================================

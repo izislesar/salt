@@ -398,3 +398,63 @@ def test_ext_pillar_after_dunder_pillar(temp_salt_minion):
     assert pillar.functions.pack["__pillar__"]["ext"] == "value"
     assert pillar.functions["pillar.get"]("ext", unmask=True) == "value"
     assert pillar.functions["pillar.get"]("normal", unmask=True) == "value"
+
+
+def test_pillar_sls_calling_pillar_items_does_not_recurse(
+    temp_salt_minion, tmp_path, caplog
+):
+    """
+    Regression test for issue #70833.
+
+    A pillar SLS file that calls ``salt['pillar.items']()`` while being rendered
+    used to re-enter pillar compilation for the same minion, recursing until
+    Python's recursion limit was reached. That flooded the master log with
+    tracebacks (the Jinja error formatter then crashed on the resulting
+    traceback and masked the real error) and the minion timed out waiting for
+    its pillar. The re-entry is now detected and reported once, as a normal
+    pillar render error, and the remaining pillar data is still delivered.
+    """
+    pillar_root = tmp_path / "pillar"
+    pillar_root.mkdir()
+    (pillar_root / "top.sls").write_text(
+        f"base:\n  '{temp_salt_minion.id}':\n    - a\n    - b\n", encoding="utf-8"
+    )
+    # "a" defines the data the reporter's SLS wanted to read back.
+    (pillar_root / "a.sls").write_text(
+        "ips:\n  sets:\n    dba:\n      - 10.0.0.1\n", encoding="utf-8"
+    )
+    # "b" calls pillar.items during its own rendering.
+    (pillar_root / "b.sls").write_text(
+        "{% set pillar_items = salt['pillar.items']() %}\n"
+        "derived: {{ pillar_items['ips']['sets']['dba'] }}\n",
+        encoding="utf-8",
+    )
+
+    opts = temp_salt_minion.config.copy()
+    opts["pillarenv"] = None
+    opts["pillar_roots"] = {"base": [str(pillar_root)]}
+    opts["pillar_cache"] = False
+
+    caplog.at_level(logging.DEBUG)
+    pillar = salt.pillar.Pillar(
+        opts=opts,
+        grains=salt.loader.grains(opts),
+        minion_id=temp_salt_minion.id,
+        saltenv="base",
+    )
+    compiled = pillar.compile_pillar()
+
+    # The pillar of the other SLS file is still delivered...
+    assert compiled["ips"]["sets"]["dba"] == ["10.0.0.1"]
+    # ...the offending SLS is reported as a render error...
+    assert compiled["_errors"] == [
+        "Rendering SLS 'b' failed. Please see master log for details."
+    ]
+    # ...with a single, actionable message instead of an unbounded recursion.
+    recursive = [
+        msg for msg in caplog.messages if "Recursive pillar compilation detected" in msg
+    ]
+    assert len(recursive) == 1
+    assert temp_salt_minion.id in recursive[0]
+    assert "import_yaml" in recursive[0]
+    assert not [msg for msg in caplog.messages if "maximum recursion depth" in msg]

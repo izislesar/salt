@@ -295,7 +295,8 @@ def wrap_tmpl_func(render_str):
 
 def _get_jinja_error_slug(tb_data):
     """
-    Return the line number where the template error was found
+    Return the template frame of a Jinja traceback, or ``None`` when the
+    traceback holds no template frame
     """
     try:
         return [
@@ -305,14 +306,17 @@ def _get_jinja_error_slug(tb_data):
         ][-1]
     except IndexError:
         pass
+    return None
 
 
 def _get_jinja_error_message(tb_data):
     """
     Return an understandable message from jinja error output
     """
+    line = _get_jinja_error_slug(tb_data)
+    if line is None:
+        return None
     try:
-        line = _get_jinja_error_slug(tb_data)
         return "{0}({1}):\n{3}".format(*line)
     except IndexError:
         pass
@@ -323,8 +327,11 @@ def _get_jinja_error_line(tb_data):
     """
     Return the line number where the template error was found
     """
+    line = _get_jinja_error_slug(tb_data)
+    if line is None:
+        return None
     try:
-        return _get_jinja_error_slug(tb_data)[1]
+        return line[1]
     except IndexError:
         pass
     return None
@@ -349,6 +356,12 @@ def _get_jinja_error(trace, context=None):
     # resolve the filename
     add_log = False
     template_path = None
+    # A traceback without any template frame (e.g. a RecursionError raised while
+    # Jinja builds the template) leaves ``error`` unset; trying to index it used
+    # to raise "TypeError: 'NoneType' object is not subscriptable" and hide the
+    # real render error (#70833).
+    if error is None:
+        return line, out
     if "sls" not in context:
         if (error[0] != "<unknown>") and os.path.exists(error[0]):
             template_path = error[0]
