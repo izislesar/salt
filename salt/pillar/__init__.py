@@ -3,6 +3,7 @@ Render the pillar data
 """
 
 import collections
+import contextvars
 import copy
 import datetime
 import fnmatch
@@ -24,11 +25,21 @@ import salt.utils.dictupdate
 import salt.utils.master
 import salt.utils.secret
 import salt.utils.url
-from salt.exceptions import SaltClientError
+from salt.exceptions import CommandExecutionError, SaltClientError
 from salt.template import compile_template
 from salt.version import __version__
 
 log = logging.getLogger(__name__)
+
+# ``(minion_id, pillarenv)`` pairs whose pillar is currently being compiled in
+# this execution context.  Pillar compilation renders pillar SLS templates, and
+# those templates can call execution modules through Jinja's ``salt[...]`` dict
+# -- e.g. ``salt['pillar.items']()``.  Such a module compiles pillar again, so
+# without this bookkeeping the compile re-enters itself for the same minion
+# until Python exhausts its recursion limit (#70833).  A context variable keeps
+# concurrent master pillar requests, which run in separate asyncio tasks, from
+# seeing each other's in-progress compilation.
+_compiling_pillar = contextvars.ContextVar("compiling_pillar", default=())
 
 
 def get_pillar(
@@ -1211,6 +1222,27 @@ class Pillar:
         """
         Render the pillar data and return
         """
+        pillarenv = self.opts.get("pillarenv")
+        compile_key = (self.minion_id, pillarenv)
+        in_progress = _compiling_pillar.get()
+        if compile_key in in_progress:
+            # Compiling pillar again for the same minion and pillar environment
+            # from inside pillar rendering recurses until Python's recursion
+            # limit is hit, which floods the master log and makes the minion
+            # time out waiting for its pillar (#70833).
+            where = f"minion '{self.minion_id}'"
+            if pillarenv:
+                where += f" (pillarenv '{pillarenv}')"
+            raise CommandExecutionError(
+                f"Recursive pillar compilation detected for {where}. Pillar is "
+                "already being compiled for this minion, so calling a function "
+                "that compiles pillar -- for example salt['pillar.items']() or "
+                "salt['pillar.ext']() -- from a pillar SLS file re-enters pillar "
+                "compilation. Use import_yaml/import_json to share data between "
+                "pillar files, or pillar.get/pillar.raw to read pillar values "
+                "that were already rendered."
+            )
+        _compile_token = _compiling_pillar.set(in_progress + (compile_key,))
         _token = salt.utils.secret.mask_pillar.set(False)
         try:
             top, top_errors = self.get_top()
@@ -1297,6 +1329,7 @@ class Pillar:
             return pillar
         finally:
             salt.utils.secret.mask_pillar.reset(_token)
+            _compiling_pillar.reset(_compile_token)
 
     def _update_loader_packs(self):
         """

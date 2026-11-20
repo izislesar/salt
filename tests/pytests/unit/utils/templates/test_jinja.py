@@ -4,13 +4,22 @@ Tests for salt.utils.templates
 
 import logging
 import re
+import sys
+import traceback
 from collections import OrderedDict
 
 import pytest
 
 from salt.exceptions import SaltRenderError
 from salt.loader.context import LoaderContext
-from salt.utils.templates import generate_sls_context, render_jinja_tmpl
+from salt.utils.templates import (
+    _get_jinja_error,
+    _get_jinja_error_line,
+    _get_jinja_error_message,
+    _get_jinja_error_slug,
+    generate_sls_context,
+    render_jinja_tmpl,
+)
 from tests.support.mock import patch
 
 
@@ -301,3 +310,31 @@ def test_generate_sls_context_empty_sls():
     assert ctx["tplfile"] == "bar.sls"
     assert ctx["tpldir"] == "."
     assert ctx["slspath"] == ""
+
+
+def _non_template_traceback():
+    """
+    Return a traceback which holds no Jinja template frame, like the traceback
+    of a RecursionError raised while Jinja builds the template.
+    """
+    try:
+        raise RuntimeError("No jinja frames in this traceback")
+    except RuntimeError:
+        return traceback.extract_tb(sys.exc_info()[2])
+
+
+def test_jinja_error_helpers_without_template_frame():
+    """
+    Regression test for issue #70833.
+
+    A traceback which holds no Jinja template frame left
+    ``_get_jinja_error_slug`` returning ``None``, and the callers then raised
+    ``TypeError: 'NoneType' object is not subscriptable`` while formatting the
+    Jinja error, which hid the real render error from the log.
+    """
+    trace = _non_template_traceback()
+
+    assert _get_jinja_error_slug(trace) is None
+    assert _get_jinja_error_line(trace) is None
+    assert _get_jinja_error_message(trace) is None
+    assert _get_jinja_error(trace) == (None, "")

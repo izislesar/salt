@@ -216,6 +216,15 @@ def items(
     Contrast with :py:func:`raw` which returns the pillar data that is
     currently loaded into the minion.
 
+    .. note::
+        Because this function compiles pillar from scratch, it cannot be called
+        from a pillar SLS file (or from an ext_pillar module) while pillar is
+        being compiled for the same minion and pillar environment, since that
+        would re-enter pillar compilation. Salt reports a pillar render error
+        in that case. Use ``import_yaml``/``import_json`` to read shared data
+        from another file, or :py:func:`get`/:py:func:`raw` to read pillar
+        values that were already rendered.
+
     pillar
         If specified, allows for a dictionary of pillar data to be made
         available to pillar and ext_pillar rendering. these pillar variables
